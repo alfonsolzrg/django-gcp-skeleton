@@ -1,0 +1,112 @@
+apiVersion: apps/v1beta1 # for versions >= 1.8.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: webapp-prod
+  labels:
+    app: webapp-prod
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: webapp-prod
+  template:
+    metadata:
+      labels:
+        app: webapp-prod
+    spec:
+      containers:
+      - name: webapp-prod
+        image: us.gcr.io/myproject-183417/myproject:v1.0.153
+        command: ["gunicorn"]
+        args: [
+          "--workers",
+          "$(GUNICORN_WORKERS)",
+          "--access-logfile",
+          "/dev/stdout",
+          "--error-logfile",
+          "/dev/stderr",
+          "--bind=0.0.0.0:$(PORT)",
+          "--timeout=100",
+          "--graceful-timeout=120",
+          "myproject.wsgi"
+        ]
+        ports:
+        - containerPort: 8000
+        env:
+        # Main settings
+        - name: DJANGO_SETTINGS_MODULE
+          value: "myproject.settings.gcp"
+        - name: DEBUG
+          value: "0"
+        # Gunicorn Settings
+        - name: PORT
+          value: "8000"
+        - name: GUNICORN_WORKERS
+          value: "4"
+        # Static files Settings
+        - name: CDN
+          value: "https://storage.googleapis.com/rocket-cdn-production"
+        # Celery Broker Settings
+        - name: BROKER_MAIN_SERVICE_HOST
+          value: 35.226.246.155
+        - name: BROKER_MAIN_SERVICE_PORT
+          value: "6379"
+        - name: BROKER_MAIN_PASSWORD
+          value: "5087a84528e0642f8ce0df5766e35762c9be79fba3fbcfa125ae7ee9567a8c17"
+        - name: BROKER_CELERY_DATABASE
+          value: "9"
+        # DB Settings
+        - name: MAIN_DB_HOST
+          value: 127.0.0.1
+        - name: MAIN_DB_PORT
+          value: "5432"
+        - name: MAIN_DB_NAME
+          value: "rocket"
+        - name: MAIN_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: cloudsql-db-prod-credentials
+              key: username
+        - name: MAIN_DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: cloudsql-db-prod-credentials
+              key: password
+      - name: cloudsql-proxy
+        image: gcr.io/cloudsql-docker/gce-proxy:1.11
+        command: ["/cloud_sql_proxy", "--dir=/cloudsql",
+                  "-instances=myproject-183417:us-central1:rocket-main=tcp:5432",
+                  "-credential_file=/secrets/cloudsql/credentials.json"]
+        volumeMounts:
+          - name: cloudsql-instance-credentials
+            mountPath: /secrets/cloudsql
+            readOnly: true
+          - name: ssl-certs
+            mountPath: /etc/ssl/certs
+          - name: cloudsql
+            mountPath: /cloudsql
+      - name: nginx
+        image: nginx
+      volumes:
+        - name: cloudsql-instance-credentials
+          secret:
+            secretName: cloudsql-instance-credentials
+        - name: cloudsql
+          emptyDir:
+        - name: ssl-certs
+          hostPath:
+            path: /etc/ssl/certs
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: webapp-prod
+spec:
+  selector:
+    app: webapp-prod
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8000
+  sessionAffinity: None
+  type: LoadBalancer
